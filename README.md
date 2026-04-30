@@ -1,3 +1,6 @@
+
+
+
 # CorpHealth — Operations Activity Review
 
 ## Background
@@ -47,38 +50,3 @@ Much of this activity was associated with an account that normally runs
 silently in the background.
 
 ---
-
-## Your Role
-
-You are taking over as the **lead analyst** assigned to review historical 
-telemetry captured by:
-
-- Microsoft Defender for Endpoint
-- Azure diagnostic and device logs
-- Supporting endpoint event artifacts
-
-You will **not** have live access to the machine — only its recorded activity.
-
----
-
-## Investigation Objectives
-
-Your task is to determine:
-
-- What system was affected
-- When suspicious activity occurred
-- How the activity progressed across different stages
-- Whether the behavior represents authorized automation or misuse of a 
-  privileged account
-
----
-
-## Case Classification
-
-The incident is not labeled as a confirmed breach. It has been formally 
-categorized as:
-
-> **"An Operations Activity Review"**
-
-Your investigation will determine whether it remains just that — or 
-escalates into something more.
