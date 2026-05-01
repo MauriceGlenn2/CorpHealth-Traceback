@@ -173,7 +173,8 @@ DeviceFileEvents
 Hint
 Look for created files under any of the “CorpHealth” operational folders.
 Focus especially on Diagnostics directories — attackers commonly use them for staging.
-2025-11-25T04:15:02.4575635Z  powershell.exe  -ExecutionPolicy Bypass -File C:\ProgramData\Corp\Ops\MaintenanceRunner_Distributed.ps1  C:\ProgramData\Microsoft\Diagnostics\CorpHealth\inventory_6ECFD4DF.csv
+2025-11-25T04:15:02.4575635Z  powershell.exe  -ExecutionPolicy Bypass -File C:\ProgramData\Corp\Ops\MaintenanceRunner_Distributed.ps1  C:\ProgramData\Microsoft\Diagnostics\CorpHealth\inventory_6ECFD4DF.csv 
+File Name: inventory_6ECFD4DF.csv
 
 FLAG 6 — Confirm the Staged File’s Integrity  *
 Now that you’ve identified the attacker’s staging location, you’ve recovered the suspicious file placed in the system’s diagnostic directory.
@@ -186,7 +187,76 @@ They allow comparison against threat intelligence feeds
 They ensure chain-of-custody integrity during analysis
 Your task mirrors that process.
 What is the SHA-256 hash of the staged file you identified in the previous flag? (Provide the full 64-character hexadecimal SHA256 value.)
+DeviceFileEvents
+| where TimeGenerated between (datetime(2025-11-14T00:00:00) .. datetime(2025-12-1T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where FolderPath contains @"\Diagnostics"
+| where ActionType == "FileCreated" 
+| project TimeGenerated, ActionType, InitiatingProcessCommandLine, InitiatingProcessAccountName, FolderPath, SHA256
+| sort by TimeGenerated desc
 Hint
-Use DeviceFileEvents to retrieve hash metadata for the file.  
+Use DeviceFileEvents to retrieve hash metadata for the file.  7f6393568e414fc564dad6f49a06a161618b50873404503f82c4447d239f12d8
+2025-11-25T04:15:02.4575635Z inventory_6ECFD4DF.csv
+
+
+Flag 7 — Identify the Duplicate Staged Artifact*
+You’ve confirmed the SHA-256 hash of the attacker’s primary staging file.
+Good. But something feels off.
+Threat actors often stage redundant or decoy files for several reasons:
+To confuse responders
+To test which folders are monitored
+To discard intermediary versions
+To probe what security tools detect or ignore
+To preserve backups of their in-progress work
+When you zoom out and look across all file events on CH-OPS-WKS02, you notice patterns in the filenames, sizes, and write times.
+One particular detail stands out:
+It looks like another file exists that is:
+Very similar in name
+Roughly the same size
+Written around the same timeframe
+BUT has a different SHA-256 hash
+AND is located in a different directory
+This is almost certainly an attacker “working copy” or alternate staging location.
+Your job is to find it.
+What is the full file path of the second file.
+➡️ Provide the complete absolute path as it appears in your logs.
+Hint
+Search for other files containing the word inventory created around the same timeframe
+C:\Users\ops.maintenance\AppData\Local\Temp\CorpHealth\inventory_tmp_6ECFD4DF.csv
+2025-11-25T04:15:02.4914978Z
+Flag 8 — Suspicious Registry Activity  *
+Your earlier findings revealed clear signs of the attacker preparing data for exfiltration. The presence of staging files in multiple directories strongly suggests they were testing what could be accessed—and what could be extracted.
+Now the timeline shows something far more concerning.
+Analysts reviewing the event timeline notice that a suspicious PowerShell script attempted to inspect or tamper with system configuration. One registry key stands out as anomalous and directly tied to the attacker’s “Credential Harvesting Simulation” stage.
+❓ Which exact registry key was created or touched during this activity?
+➡️ Provide the full registry path as shown in logs ( HKEY_LOCAL_MACHINE\ …)
+DeviceRegistryEvents
+| where TimeGenerated between (datetime(2025-11-20T00:00:00) .. datetime(2025-12-1T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where ActionType == "RegistryKeyCreated"
+| where InitiatingProcessAccountName != "network service"
+| where InitiatingProcessAccountName != "system"
+| where InitiatingProcessFileName != "onedrivesetup.exe"
+| project TimeGenerated, InitiatingProcessAccountName, InitiatingProcessCommandLine, RegistryKey
+powershell.exe  -ExecutionPolicy Bypass -File C:\ProgramData\Corp\Ops\MaintenanceRunner_Distributed.ps1
+HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\EventLog\Application\CorpHealthAgent
+2025-11-25T04:14:40.9857945Z
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
