@@ -50,3 +50,35 @@ Much of this activity was associated with an account that normally runs
 silently in the background.
 
 ---
+
+2025-11-23T03:46:25.5255093Z
+
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2025-11-12T00:00:00) .. datetime(2025-11-28T20:00:00))
+| where hourofday(TimeGenerated) < 6 or hourofday(TimeGenerated) >= 18
+| where DeviceName contains "CH-OPS-WKS02"
+| where InitiatingProcessCommandLine contains "powershell.exe"
+| where AccountName != "system" 
+| where AccountName != "local service" 
+| sort by TimeGenerated asc 
+| project TimeGenerated, AccountName, FolderPath, InitiatingProcessCommandLine
+
+"powershell.exe" -NoProfile -EncodedCommand VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAnAHQAbwBrAGUAbgAtADYARAA1AEUANABFAEUAMAA4ADIAMgA3ACcA 
+- Could be a session ID, implant identifier, or C2 handshake value
+- Decoded looks like = Write-Output 'token-6D5E4EE08227' 
+
+
+2025-11-23T03:46:37.9339195Z
+
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2025-11-12T00:00:00) .. datetime(2025-11-28T20:00:00))
+| where hourofday(TimeGenerated) < 6 or hourofday(TimeGenerated) >= 18
+| where DeviceName contains "CH-OPS-WKS02"
+| where InitiatingProcessCommandLine contains "powershell.exe"
+| where AccountName != "system" 
+| where AccountName != "local service" 
+| sort by TimeGenerated asc 
+| project TimeGenerated, AccountName, FolderPath, InitiatingProcessCommandLine
+
+"cmd.exe" /c echo powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Add-MpPreference -ExclusionPath C:\ProgramData\Corp\Ops\staging -Force > ".cli" 
+- Excluding folder path from de
