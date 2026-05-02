@@ -243,6 +243,143 @@ HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Services\EventLog\Application\CorpHealth
 2025-11-25T04:14:40.9857945Z
 
 
+Flag 9 — Scheduled Task Persistence*
+You continue examining the activity coming from CH-OPS-WKS02.
+Moments after the credential-related registry anomaly, you notice additional persistence patterns.
+Even though some attempts may have failed due to permission issues, at least one scheduled task was successfully created earlier in the investigation window.
+This task is not part of CorpHealth’s standard approved tasks and represents an unauthorized persistence mechanism.
+❓ Which Scheduled Task Did the Attacker First Create?
+Provide the full Scheduled Task name created during the attack. (e.g. HKEY_LOCAL_MACHINE\...\...\...\...\Schedule\TaskCache\Tree\GoogleUserPEH)
+Hint
+Search DeviceRegistryEvents where:
+ActionType == "RegistryKeyCreated" or "RegistryValueSet"
+DeviceRegistryEvents
+| where TimeGenerated between (datetime(2025-11-12T00:00:00) .. datetime(2025-12-15T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where ActionType == "RegistryValueSet"
+| project TimeGenerated, ActionType, RegistryKey, RegistryValueName, RegistryValueData, InitiatingProcessCommandLine
+| sort by TimeGenerated asc
+TaskCache\Tree\This is exactly where Windows stores scheduled task entries in the registry 
+2025-11-25T04:15:26.9010509Z
+HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\CorpHealth_A65E64
+Flag 10 - Registry-based Persistence  *
+  As your investigation advances, you pivot toward examining whether the attacker attempted any form of persistence.
+Your earlier findings suggested the script may have tampered with startup mechanisms — but now you have confirmation.  
+You observe:
+A new Run key value created
+A value written pointing to an execution of a PowerShell script
+And the value deleted shortly after
+This pattern is intentional—it resembles ephemeral persistence, meant to survive a single reboot or login, trigger once, and then erase its tracks.
+Your goal: identify which value name was created.
+What Registry Value Name Was Added to the Run Key?
+Provide the exact RegistryValueName associated with the persistence attempt.
+Hint
+Filter DeviceRegistryEvents for:
+RegistryKeyCreated
+RegistryValueSet
+RegistryKeyDeleted
+2025-11-25T04:24:48.8957038Z
+HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Run
+MaintenanceRunner
+FLAG 11 — Privilege Escalation Event Timestamp*
+During the intrusion, the attacker executed a simulated privilege-escalation action inside the MaintenanceRunner sequence.
+Your task:
+➡️ Locate the exact Timestamp (UTC) of the FIRST ConfigAdjust privilege-escalation event.
+This event comes from the Application log and carries an event payload (AdditionalFields) describing a configuration adjustment.
+Hint
+Provide the timestamp exactly as the logs display it in its DeviceEvents logs.
+This is not a process creation, registry modification, or network event — only an Application event.  
+DeviceEvents
+| where TimeGenerated between (datetime(2025-11-15T00:00:00) .. datetime(2025-11-26T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where AdditionalFields contains "ConfigAdjust"
+| project TimeGenerated, ActionType, InitiatingProcessCommandLine, AdditionalFields, InitiatingProcessAccountName
+| sort by TimeGenerated asc
+powershell.exe  -ExecutionPolicy Bypass -File C:\ProgramData\Corp\Ops\MaintenanceRunner_Distributed.ps1
+2025-11-23T03:47:21.8529749Z
+FLAG 12 — Identify the AV Exclusion Attempt  *
+Your investigation reveals that the attacker attempted to modify Windows Defender settings to exclude a specific folder from real-time scanning.  
+What folder path did the attacker attempt to add as an exclusion in Windows Defender?
+Provide the full folder path as shown in telemetry.
+This flag focuses on identifying the exact ExclusionPath the attacker attempted to protect from detection. (e.g. C:\...\...\...\...)
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2025-11-01T00:00:00) .. datetime(2025-12-26T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where FileName has_any ("powershell.exe", "cmd.exe") 
+| where ProcessCommandLine  has_any ("Add-MpPreference",
+"Set-MpPreference")
+| project TimeGenerated,  ProcessCommandLine
+2025-11-23T03:46:37.92301Z
+"cmd.exe" /c echo powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Add-MpPreference -ExclusionPath C:\ProgramData\Corp\Ops\staging -Force > ".cli" 
+FLAG 13 — PowerShell Encoded Command Execution  *
+During the intrusion, a PowerShell process executed using the -EncodedCommand flag.
+By analyzing DeviceProcessEvents, determine:
+➡️ What decoded PowerShell command was executed First?
+(Provide the decoded plaintext command.)
+Hints  
+Filter for EncodedCommand : 
+DeviceProcessEvents | where ProcessCommandLine contains "-EncodedCommand"
+Filter for the AccountName in question, make sure to avoid system processes
+Extract and decode the Base64 string:
+PowerShell Unicode Base64 decoding (local analyst method):[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String("<encoded>"))
+KQL Unicode Base64 decoding (add this to your KQL): 
+| extend Enc = extract(@"-EncodedCommand\s+([A-Za-z0-9+/=]+)", 1, ProcessCommandLine)
+| extend Decoded = base64_decode_tostring(Enc)
+You can copy the decoded value from the logs to your clipboard and it will paste without the null values.
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2025-11-12T00:00:00) .. datetime(2025-11-28T20:00:00))
+| where hourofday(TimeGenerated) < 6 or hourofday(TimeGenerated) >= 18
+| where DeviceName contains "CH-OPS-WKS02"
+| where InitiatingProcessCommandLine contains "powershell.exe"
+| where AccountName != "system" 
+| where AccountName != "local service" 
+| sort by TimeGenerated asc 
+| project TimeGenerated, AccountName, FolderPath, InitiatingProcessCommandLine
+2025-11-23T03:46:25.5255093Z
+"powershell.exe" -NoProfile -EncodedCommand VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAnAHQAbwBrAGUAbgAtADYARAA1AEUANABFAEUAMAA4ADIAMgA3ACcA 
+Decodes to : Write-Output 'token-6D5E4EE08227'
+Flag 14 — Privilege Token Modification  *
+You’ve traced the suspicious registry activity and the scheduled persistence artifacts back to the same PowerShell execution chain.
+But the attacker didn’t stop there.
+As you review deeper system events, something stands out:
+Windows recorded a ProcessPrimaryTokenModified event, a behavior consistent with attackers attempting to escalate privileges or adjust token integrity to blend in with SYSTEM-level processes.
+Your task now is to pinpoint which process actually performed that token modification.
+What is the "InitiatingProcessId" of the process whose token privileges were modified?
+Hint
+Filter DeviceEvents where AdditionalFields contains either:
+"tokenChangeDescription"
+"Privileges were added"
+Recall the Flag 1 Script.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
