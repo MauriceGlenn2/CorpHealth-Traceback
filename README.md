@@ -1,5 +1,8 @@
 # CorpHealth — Operations Activity Review 
 
+<img width="5184" height="3456" alt="national-cancer-institute-NFvdKIhxYlU-unsplash" src="https://github.com/user-attachments/assets/edea0893-2866-41c4-b67d-68974f605ba5" />
+
+
 ## Background
 
 Your organization recently completed a phased deployment of an internal 
